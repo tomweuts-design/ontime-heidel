@@ -1,0 +1,62 @@
+name: Fetch OnTime planning
+
+on:
+  schedule:
+    - cron: '0 16 * * *'   # 18:00 lokale tijd tijdens zomertijd (UTC+2)
+    - cron: '0 17 * * *'   # 18:00 lokale tijd tijdens wintertijd (UTC+1)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Negeer tijdcontrole (voor testen)'
+        type: boolean
+        default: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check of het nu echt 18:00 lokale tijd is en geen zaterdag
+        id: check
+        run: |
+          LOCAL_HOUR=$(TZ='Europe/Brussels' date +%H)
+          LOCAL_DOW=$(TZ='Europe/Brussels' date +%u)
+          echo "Lokaal uur: $LOCAL_HOUR, weekdag: $LOCAL_DOW (6=zaterdag)"
+          if [ "${{ github.event.inputs.force }}" == "true" ] || { [ "$LOCAL_HOUR" == "18" ] && [ "$LOCAL_DOW" != "6" ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Haal planning op en schrijf naar Supabase
+        if: steps.check.outputs.run == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          VEHICLE="BEM1663"
+          DATA=$(curl -s "https://api.hconnect.digital/ontime/vehicles/$VEHICLE/rosters")
+          echo "Ontvangen: $DATA"
+
+          echo "$DATA" | jq '{
+            vehicle_number: .vehicleNumber,
+            driver_id: .driverId,
+            driver_firstname: .driverFirstname,
+            loading_datetime: .loadingDateTime,
+            loading_location_name: .loadingLocationName,
+            loading_location_address: .loadingLocationAddress,
+            loading_location_postcode: .loadingLocationPostcode,
+            loading_location_city: .loadingLocationCity,
+            pickup_datetime: .pickupDateTime,
+            pickup_location_name: .pickupLocationName,
+            pickup_address: .pickupAddress,
+            pickup_postcode: .pickupPostCode,
+            pickup_city: .pickupCity,
+            source_updated_at: .updateDateTime
+          }' > payload.json
+
+          curl -s -X POST "$SUPABASE_URL/rest/v1/dagplanning" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates" \
+            -d @payload.json
