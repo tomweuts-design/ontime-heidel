@@ -27,64 +27,68 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Haal planning op en schrijf naar Supabase
+      - name: Haal planning op voor alle geregistreerde chauffeurs
         if: steps.check.outputs.run == 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          DRIVER_ID="9800032501"
-
-          RESPONSE=$(curl -s --compressed -w "\n%{http_code}" "https://api.hconnect.digital/ontime/drivers/$DRIVER_ID/rosters")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$ d')
-
-          echo "HTTP status: $HTTP_CODE"
-          echo "Body: $BODY"
-
-          if [ "$HTTP_CODE" == "200" ]; then
-            echo "$BODY" | jq --arg status "gepland" '{
-              driver_id: .driverId,
-              driver_firstname: .driverFirstname,
-              vehicle_number: .vehicleNumber,
-              loading_datetime: .loadingDateTime,
-              loading_location_name: .loadingLocationName,
-              loading_location_address: .loadingLocationAddress,
-              loading_location_postcode: .loadingLocationPostcode,
-              loading_location_city: .loadingLocationCity,
-              pickup_datetime: .pickupDateTime,
-              pickup_location_name: .pickupLocationName,
-              pickup_address: .pickupAddress,
-              pickup_postcode: .pickupPostCode,
-              pickup_city: .pickupCity,
-              source_updated_at: .updateDateTime,
-              status: $status
-            }' > payload.json
-          else
-            jq -n --arg driverId "$DRIVER_ID" --arg status "geen_planning" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{
-              driver_id: $driverId,
-              driver_firstname: null,
-              vehicle_number: null,
-              loading_datetime: null,
-              loading_location_name: null,
-              loading_location_address: null,
-              loading_location_postcode: null,
-              loading_location_city: null,
-              pickup_datetime: null,
-              pickup_location_name: null,
-              pickup_address: null,
-              pickup_postcode: null,
-              pickup_city: null,
-              source_updated_at: $now,
-              status: $status
-            }' > payload.json
-          fi
-
-          cat payload.json
-
-          curl -s -X POST "$SUPABASE_URL/rest/v1/dagplanning?on_conflict=driver_id" \
+          DRIVERS=$(curl -s "$SUPABASE_URL/rest/v1/chauffeurs?select=driver_id" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: resolution=merge-duplicates" \
-            -d @payload.json
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")
+          echo "Geregistreerde chauffeurs: $DRIVERS"
+
+          echo "$DRIVERS" | jq -c '.[]' | while read -r row; do
+            DRIVER_ID=$(echo "$row" | jq -r '.driver_id')
+            echo "--- Verwerken: $DRIVER_ID ---"
+
+            RESPONSE=$(curl -s --compressed -w "\n%{http_code}" "https://api.hconnect.digital/ontime/drivers/$DRIVER_ID/rosters")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$ d')
+            echo "HTTP status: $HTTP_CODE"
+
+            if [ "$HTTP_CODE" == "200" ]; then
+              PAYLOAD=$(echo "$BODY" | jq --arg status "gepland" '{
+                driver_id: .driverId,
+                driver_firstname: .driverFirstname,
+                vehicle_number: .vehicleNumber,
+                loading_datetime: .loadingDateTime,
+                loading_location_name: .loadingLocationName,
+                loading_location_address: .loadingLocationAddress,
+                loading_location_postcode: .loadingLocationPostcode,
+                loading_location_city: .loadingLocationCity,
+                pickup_datetime: .pickupDateTime,
+                pickup_location_name: .pickupLocationName,
+                pickup_address: .pickupAddress,
+                pickup_postcode: .pickupPostCode,
+                pickup_city: .pickupCity,
+                source_updated_at: .updateDateTime,
+                status: $status
+              }')
+            else
+              PAYLOAD=$(jq -n --arg driverId "$DRIVER_ID" --arg status "geen_planning" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{
+                driver_id: $driverId,
+                driver_firstname: null,
+                vehicle_number: null,
+                loading_datetime: null,
+                loading_location_name: null,
+                loading_location_address: null,
+                loading_location_postcode: null,
+                loading_location_city: null,
+                pickup_datetime: null,
+                pickup_location_name: null,
+                pickup_address: null,
+                pickup_postcode: null,
+                pickup_city: null,
+                source_updated_at: $now,
+                status: $status
+              }')
+            fi
+
+            curl -s -X POST "$SUPABASE_URL/rest/v1/dagplanning?on_conflict=driver_id" \
+              -H "apikey: $SUPABASE_SERVICE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Prefer: resolution=merge-duplicates" \
+              -d "$PAYLOAD"
+          done
